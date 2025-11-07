@@ -1,22 +1,75 @@
 import SwiftUI
-import PhotosUI // Pacote para o seletor de fotos moderno
+// import PhotosUI (NÃO PRECISAMOS MAIS DELE)
 import FirebaseStorage // Para o upload da imagem
 import FirebaseFunctions // Para chamar a IA
 import FirebaseFirestore // Para salvar no banco de dados
-import UIKit // Para manipular a imagem
+import UIKit // PARA A CÂMERA E A IMAGEM
 
+// --- INÍCIO DO CÓDIGO DA CÂMERA ---
+// Este é o "tradutor" que permite o SwiftUI usar a câmera do UIKit
+struct CameraPicker: UIViewControllerRepresentable {
+    
+    @Binding var selectedImage: UIImage? // A imagem que o usuário tirar
+    @Environment(\.presentationMode) private var presentationMode // Para fechar a câmera
+    
+    // 1. Cria o 'Controlador' da Câmera
+    func makeUIViewController(context: UIViewControllerRepresentableContext<CameraPicker>) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator // Diz quem vai "escutar" os eventos
+        picker.sourceType = .camera // FALA PARA USAR A CÂMERA DIRETAMENTE
+        return picker
+    }
+    
+    // 2. (Não precisamos fazer nada para atualizar)
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: UIViewControllerRepresentableContext<CameraPicker>) {
+        // não precisa
+    }
+    
+    // 3. Cria o "Ouvinte"
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    // 4. A Classe "Ouvinte" (Coordinator)
+    // Isso é o que "escuta" o usuário tirar a foto ou cancelar
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        var parent: CameraPicker
+        
+        init(_ parent: CameraPicker) {
+            self.parent = parent
+        }
+        
+        // Função chamada QUANDO o usuário TIRA A FOTO
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[UIImagePickerController.InfoKey.originalImage] as? UIImage {
+                parent.selectedImage = image // Envia a imagem de volta para o app
+            }
+            parent.presentationMode.wrappedValue.dismiss() // Fecha a câmera
+        }
+        
+        // Função chamada se o usuário clicar em "Cancelar"
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.presentationMode.wrappedValue.dismiss() // Fecha a câmera
+        }
+    }
+}
+// --- FIM DO CÓDIGO DA CÂMERA ---
+
+
+// --- NOSSA TELA PRINCIPAL (MODIFICADA) ---
 struct ContentView: View {
     
     // 1. Estados da Imagem
     @State private var selectedImageData: Data?
-    @State private var selectedImage: UIImage?
+    @State private var selectedImage: UIImage? // Agora esta será a imagem da câmera
     
     // 2. Estado do Seletor
-    @State private var selectedItem: PhotosPickerItem?
+    // @State private var selectedItem: PhotosPickerItem? (NÃO PRECISAMOS MAIS)
 
     // 3. Estados da Interface
     @State private var analysisResult: String = "Nenhum cupom selecionado."
     @State private var isLoading: Bool = false
+    @State private var showingCamera: Bool = false // Controla se a câmera está aberta
 
     var body: some View {
         NavigationView {
@@ -43,30 +96,30 @@ struct ContentView: View {
                         .frame(height: 300)
                 }
 
-                // --- 2. BOTÃO DE SELECIONAR FOTO ---
-                PhotosPicker(
-                    selection: $selectedItem,
-                    matching: .images,
-                    photoLibrary: .shared()
-                ) {
-                    Text(selectedImage == nil ? "1. Selecionar Cupom" : "Trocar Cupom")
+                // --- 2. BOTÃO DE ACIONAR A CÂMERA (MUDANÇA AQUI) ---
+                Button(action: {
+                    self.showingCamera = true // Manda abrir a câmera
+                }) {
+                    Text(selectedImage == nil ? "1. Escanear Cupom (CâMERA)" : "Tirar Nova Foto")
                         .frame(maxWidth: .infinity)
                         .padding()
                         .background(Color.blue)
                         .foregroundColor(.white)
                         .cornerRadius(10)
                 }
-                .onChange(of: selectedItem) { newItem in
-                    Task {
-                        if let data = try? await newItem?.loadTransferable(type: Data.self) {
-                            selectedImageData = data
-                            selectedImage = UIImage(data: data)
-                            analysisResult = "Imagem carregada. Clique em 'Analisar'."
-                        }
-                    }
+                // Esta "planilha" (sheet) abre a câmera
+                .sheet(isPresented: $showingCamera) {
+                    CameraPicker(selectedImage: $selectedImage)
+                }
+                // Esta função é chamada QUANDO a câmera entrega uma foto
+                .onChange(of: selectedImage) { newImage in
+                    guard let newImage = newImage else { return }
+                    // Convertemos a imagem para dados (JPEG) para o upload
+                    self.selectedImageData = newImage.jpegData(compressionQuality: 0.8)
+                    self.analysisResult = "Imagem capturada. Clique em 'Analisar'."
                 }
 
-                // --- 3. BOTÃO DE ANALISAR ---
+                // --- 3. BOTÃO DE ANALISAR (Sem mudanças) ---
                 Button(action: startAnalysis) {
                     if isLoading {
                         ProgressView()
@@ -81,7 +134,7 @@ struct ContentView: View {
                 .cornerRadius(10)
                 .disabled(selectedImage == nil || isLoading)
 
-                // --- 4. ÁREA DE RESULTADO DA IA ---
+                // --- 4. ÁREA DE RESULTADO DA IA (Sem mudanças) ---
                 TextEditor(text: .constant(analysisResult))
                     .frame(height: 200)
                     .overlay(
@@ -97,14 +150,13 @@ struct ContentView: View {
         }
     }
     
-    // --- NOSSAS FUNÇÕES LÓGICAS ---
+    // --- NOSSAS FUNÇÕES LÓGICAS (Sem mudanças) ---
     
-    // Esta função "ajudante" formata o JSON para ficar bonito
     func prettyPrint(data: [String: Any]) -> String {
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: data, options: .prettyPrinted)
             if let jsonString = String(data: jsonData, encoding: .utf8) {
-                return jsonString.replacingOccurrences(of: "\\/", with: "/") // Corrige barras
+                return jsonString.replacingOccurrences(of: "\\/", with: "/")
             }
         } catch {
             return "Erro ao formatar JSON: \(error.localizedDescription)"
@@ -112,11 +164,8 @@ struct ContentView: View {
         return "Não foi possível formatar o JSON."
     }
     
-    // Função para salvar os dados no Banco de Dados
     func saveToFirestore(data: [String: Any]) {
-        let db = Firestore.firestore() // Pega a referência do banco de dados
-        
-        // "na coleção 'despesas', adicione este novo documento (o 'data')"
+        let db = Firestore.firestore()
         db.collection("despesas").addDocument(data: data) { error in
             if let error = error {
                 print("Erro ao salvar no Firestore: \(error.localizedDescription)")
@@ -155,8 +204,6 @@ struct ContentView: View {
                 }
                 
                 analysisResult = "Passo 3/3: Analisando imagem com IA..."
-                
-                // 5. CHAMA A IA com a URL da imagem
                 callAILogic(url: downloadURL)
             }
         }
@@ -165,7 +212,6 @@ struct ContentView: View {
     func callAILogic(url: URL) {
         let functions = Functions.functions()
         
-        // O backend espera a URL como 'data' e retorna o JSON diretamente
         functions.httpsCallable("analyzeimage").call(url.absoluteString) { result, error in
             
             if let error = error {
@@ -174,20 +220,15 @@ struct ContentView: View {
                 return
             }
             
-            // O 'result.data' JÁ É o objeto JSON que queremos.
             if let data = result?.data as? [String: Any] {
-                // 'data' é o seu JSON! Vamos formatá-lo para exibição
                 analysisResult = "Análise Concluída!\n\n\(prettyPrint(data: data))"
-                
-                // SALVA NO FIREBASE
                 saveToFirestore(data: data)
                 
             } else {
-                // Se a IA retornar algo que não é um [String: Any]
-                analysisResult = "IA retornou um formato inesperado (não é [String: Any]): \(result?.data ?? "sem dados")"
+                analysisResult = "IA retornou um formato inesperado: \(result?.data ?? "sem dados")"
             }
             
-            isLoading = false // Desativa a rodinha de "carregando"
+            isLoading = false
         }
     }
 }
